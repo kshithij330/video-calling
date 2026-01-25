@@ -173,13 +173,6 @@ function VideoTile({
           >
             🔇
           </button>
-          <button 
-            className="tile-control-btn" 
-            onClick={(e) => { e.stopPropagation(); onCameraOff(); }}
-            title="Turn off camera"
-          >
-            📷
-          </button>
         </div>
       )}
     </div>

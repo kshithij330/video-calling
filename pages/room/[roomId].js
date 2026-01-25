@@ -41,6 +41,11 @@ export default function Room() {
   const [copied, setCopied] = useState(false);
   const [pinnedId, setPinnedId] = useState(null);
   
+  const [audioDevices, setAudioDevices] = useState([]);
+  const [videoDevices, setVideoDevices] = useState([]);
+  const [selectedAudioId, setSelectedAudioId] = useState('');
+  const [selectedVideoId, setSelectedVideoId] = useState('');
+  
   const peerConnectionsRef = useRef(new Map());
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
@@ -102,13 +107,22 @@ export default function Room() {
       });
     };
 
-    const handleOffer = async ({ from, offer }) => {
-      console.log('Received offer from:', from);
-      const pc = await createPeerConnection(from, false);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('answer', { to: from, answer });
+    const handleIceCandidate = async ({ from, candidate }) => {
+      const pc = peerConnectionsRef.current.get(from);
+      if (pc && candidate) {
+        try {
+          // Only add candidate if remote description is set
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } else {
+            // Queue candidate if not ready (simple queue)
+            if (!pc.candidateQueue) pc.candidateQueue = [];
+            pc.candidateQueue.push(candidate);
+          }
+        } catch (error) {
+          console.error('Error adding ICE candidate:', error);
+        }
+      }
     };
 
     const handleAnswer = async ({ from, answer }) => {
@@ -116,17 +130,27 @@ export default function Room() {
       const pc = peerConnectionsRef.current.get(from);
       if (pc) {
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        
+        // Process queued candidates
+        if (pc.candidateQueue) {
+          pc.candidateQueue.forEach(cand => pc.addIceCandidate(new RTCIceCandidate(cand)));
+          pc.candidateQueue = [];
+        }
       }
     };
 
-    const handleIceCandidate = async ({ from, candidate }) => {
-      const pc = peerConnectionsRef.current.get(from);
-      if (pc && candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (error) {
-          console.error('Error adding ICE candidate:', error);
-        }
+    const handleOffer = async ({ from, offer }) => {
+      console.log('Received offer from:', from);
+      const pc = await createPeerConnection(from, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', { to: from, answer });
+
+      // Process queued candidates
+      if (pc.candidateQueue) {
+        pc.candidateQueue.forEach(cand => pc.addIceCandidate(new RTCIceCandidate(cand)));
+        pc.candidateQueue = [];
       }
     };
 
@@ -296,6 +320,105 @@ export default function Room() {
     }
   };
 
+  // Enumerate devices
+  useEffect(() => {
+    if (!isJoined) return;
+
+    const getDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audio = devices.filter(d => d.kind === 'audioinput');
+        const video = devices.filter(d => d.kind === 'videoinput');
+        
+        setAudioDevices(audio);
+        setVideoDevices(video);
+
+        // Set initial selected devices from current tracks if not already set
+        if (localStreamRef.current) {
+          const aTrack = localStreamRef.current.getAudioTracks()[0];
+          const vTrack = localStreamRef.current.getVideoTracks()[0];
+          if (aTrack && !selectedAudioId) setSelectedAudioId(aTrack.getSettings().deviceId);
+          if (vTrack && !selectedVideoId) setSelectedVideoId(vTrack.getSettings().deviceId);
+        }
+      } catch (err) {
+        console.error('Error enumerating devices:', err);
+      }
+    };
+
+    getDevices();
+    navigator.mediaDevices.addEventListener('devicechange', getDevices);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', getDevices);
+  }, [isJoined, selectedAudioId, selectedVideoId]);
+
+  // Switch Audio Device
+  const changeAudioDevice = async (deviceId) => {
+    setSelectedAudioId(deviceId);
+    if (!localStreamRef.current) return;
+
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId } }
+      });
+      const newTrack = newStream.getAudioTracks()[0];
+      const oldTrack = localStreamRef.current.getAudioTracks()[0];
+
+      if (oldTrack) {
+        oldTrack.stop();
+        localStreamRef.current.removeTrack(oldTrack);
+      }
+      
+      localStreamRef.current.addTrack(newTrack);
+      
+      // Update all peer connections
+      peerConnectionsRef.current.forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+
+      // Maintain current mute state
+      newTrack.enabled = !isMuted;
+      
+    } catch (err) {
+      console.error('Error switching audio device:', err);
+    }
+  };
+
+  // Switch Video Device
+  const changeVideoDevice = async (deviceId) => {
+    setSelectedVideoId(deviceId);
+    if (!localStreamRef.current || isScreenSharing) return;
+
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId } }
+      });
+      const newTrack = newStream.getVideoTracks()[0];
+      const oldTrack = localStreamRef.current.getVideoTracks()[0];
+
+      if (oldTrack) {
+        oldTrack.stop();
+        localStreamRef.current.removeTrack(oldTrack);
+      }
+      
+      localStreamRef.current.addTrack(newTrack);
+      
+      // Update all peer connections
+      peerConnectionsRef.current.forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+
+      // Maintain current camera state
+      newTrack.enabled = !isCameraOff;
+      
+      // Force re-render
+      setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      
+    } catch (err) {
+      console.error('Error switching video device:', err);
+    }
+  };
+
   // Toggle mute
   const toggleMute = useCallback(() => {
     if (localStreamRef.current) {
@@ -436,11 +559,6 @@ export default function Room() {
     socket?.emit('remote-mute', { roomId, targetId });
   };
 
-  // Remote camera off
-  const remoteCameraOff = (targetId) => {
-    socket?.emit('remote-camera-off', { roomId, targetId });
-  };
-
   // Send chat message
   const sendMessage = (message) => {
     if (message.trim()) {
@@ -553,7 +671,6 @@ export default function Room() {
               isCameraOff={isCameraOff}
               isScreenSharing={isScreenSharing}
               onRemoteMute={remoteMute}
-              onRemoteCameraOff={remoteCameraOff}
             />
           </div>
 
@@ -577,6 +694,12 @@ export default function Room() {
           onToggleScreenShare={toggleScreenShare}
           onToggleChat={toggleChat}
           onLeave={leaveRoom}
+          audioDevices={audioDevices}
+          videoDevices={videoDevices}
+          selectedAudioId={selectedAudioId}
+          selectedVideoId={selectedVideoId}
+          onChangeAudio={changeAudioDevice}
+          onChangeVideo={changeVideoDevice}
         />
       </div>
     </>
