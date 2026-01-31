@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import { v4 as uuidv4 } from 'uuid';
 import Head from 'next/head';
+import { Video, Plus, ArrowRight, Shield, Globe } from 'lucide-react';
 
 export default function Home() {
   const router = useRouter();
@@ -27,15 +28,16 @@ export default function Home() {
         <title>MeetUp - Video Calling Platform</title>
         <meta name="description" content="Connect with anyone, anywhere with high-quality video calls" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📹</text></svg>" />
       </Head>
 
       <div className="home-container">
         <div className="home-content animate-fade-in">
-          <div className="logo">📹</div>
+          <div className="logo">
+            <Video size={48} color="var(--accent-primary)" strokeWidth={2.5} />
+          </div>
           <h1 className="home-title">MeetUp</h1>
           <p className="home-subtitle">
-            Connect with anyone, anywhere with crystal-clear video calls
+            Premium video meetings. Now free for everyone.
           </p>
 
           <div className="home-card">
@@ -43,30 +45,30 @@ export default function Home() {
               className="btn btn-primary" 
               onClick={createRoom}
               disabled={isCreating}
-              style={{ width: '100%', padding: '16px' }}
+              style={{ width: '100%', padding: '16px', gap: '12px' }}
             >
               {isCreating ? (
                 <>
-                  <span className="spinner">⏳</span>
+                  <Plus className="animate-spin" size={20} />
                   Creating Room...
                 </>
               ) : (
                 <>
-                  <span>➕</span>
-                  Create New Room
+                  <Plus size={20} />
+                  New Meeting
                 </>
               )}
             </button>
 
             <div className="home-divider">
-              <span>or join an existing room</span>
+              <span>or</span>
             </div>
 
             <form className="join-form" onSubmit={joinRoom}>
               <input
                 type="text"
                 className="input"
-                placeholder="Enter Room ID"
+                placeholder="Enter a code or link"
                 value={roomId}
                 onChange={(e) => setRoomId(e.target.value)}
               />
@@ -80,13 +82,16 @@ export default function Home() {
             </form>
           </div>
 
-          <p style={{ 
-            marginTop: '32px', 
-            color: 'var(--text-muted)', 
-            fontSize: '13px' 
-          }}>
-            🔒 End-to-end encrypted • No account required
-          </p>
+          <div className="home-features">
+            <div className="feature">
+              <Shield size={18} />
+              <span>Secure & Private</span>
+            </div>
+            <div className="feature">
+              <Globe size={18} />
+              <span>No Account Needed</span>
+            </div>
+          </div>
         </div>
       </div>
     </>

@@ -1,44 +1,112 @@
 import { useRef, useEffect } from 'react';
+import { 
+  Pin, 
+  PinOff, 
+  MicOff, 
+  VideoOff, 
+  Hand, 
+  Maximize2, 
+  MoreVertical 
+} from 'lucide-react';
 
 export default function VideoGrid({
   localStream,
+  localScreenStream,
   remoteStreams,
+  remoteScreenStreams,
   participants,
   localUserName,
+  localHandRaised,
   pinnedId,
   onPin,
   isMuted,
   isCameraOff,
-  isScreenSharing,
   onRemoteMute,
   onRemoteCameraOff
 }) {
-  const totalParticipants = remoteStreams.size + 1;
   const isPinned = pinnedId !== null;
   
+  // Calculate total number of tiles to determine grid size
+  const getTiles = () => {
+    const tiles = [];
+    
+    // Local camera
+    tiles.push({
+      id: 'local',
+      stream: localStream,
+      participant: null,
+      isLocal: true,
+      isScreen: false
+    });
+    
+    // Local screen
+    if (localScreenStream) {
+      tiles.push({
+        id: 'local-screen',
+        stream: localScreenStream,
+        participant: null,
+        isLocal: true,
+        isScreen: true
+      });
+    }
+    
+    // Remote participants
+    participants.forEach((p, id) => {
+      // Camera
+      if (remoteStreams.has(id)) {
+        tiles.push({
+          id,
+          stream: remoteStreams.get(id),
+          participant: p,
+          isLocal: false,
+          isScreen: false
+        });
+      }
+      
+      // Screen
+      if (remoteScreenStreams.has(id)) {
+        tiles.push({
+          id: `${id}-screen`,
+          stream: remoteScreenStreams.get(id),
+          participant: p,
+          isLocal: false,
+          isScreen: true
+        });
+      }
+    });
+
+    return tiles;
+  };
+
+  const tiles = getTiles();
+  const totalTiles = tiles.length;
+
   const getGridClass = () => {
     if (isPinned) return 'grid-pinned';
-    if (totalParticipants === 1) return 'grid-1';
-    if (totalParticipants === 2) return 'grid-2';
-    if (totalParticipants <= 4) return 'grid-3-4';
-    if (totalParticipants <= 6) return 'grid-5-6';
+    if (totalTiles === 1) return 'grid-1';
+    if (totalTiles === 2) return 'grid-2';
+    if (totalTiles <= 4) return 'grid-3-4';
+    if (totalTiles <= 6) return 'grid-5-6';
     return 'grid-7-9';
   };
 
-  const renderVideoTile = (id, stream, participant, isLocal) => (
+  const renderTile = (tile) => (
     <VideoTile
-      key={id}
-      visitorId={id}
-      stream={stream}
-      userName={participant?.userName || (isLocal ? localUserName || 'You' : 'Participant')}
-      isMuted={participant?.isMuted || (isLocal ? isMuted : false)}
-      isCameraOff={participant?.isCameraOff || (isLocal ? isCameraOff : false)}
-      isLocal={isLocal}
-      isScreenSharing={isLocal ? isScreenSharing : false}
-      isPinned={pinnedId === id}
-      onPin={() => onPin(id)}
-      onMute={!isLocal ? () => onRemoteMute(id) : undefined}
-      onCameraOff={!isLocal ? () => onRemoteCameraOff(id) : undefined}
+      key={tile.id}
+      visitorId={tile.id}
+      stream={tile.stream}
+      userName={tile.isScreen 
+        ? `${tile.participant?.userName || (tile.isLocal ? localUserName || 'You' : 'Participant')}'s Screen` 
+        : (tile.participant?.userName || (tile.isLocal ? localUserName || 'You' : 'Participant'))}
+      isMuted={tile.isScreen ? true : (tile.participant?.isMuted || (tile.isLocal ? isMuted : false))}
+      isCameraOff={tile.isScreen ? false : (tile.participant?.isCameraOff || (tile.isLocal ? isCameraOff : false))}
+      isHandRaised={tile.isScreen ? false : (tile.participant?.isHandRaised || (tile.isLocal ? localHandRaised : false))}
+      isLocal={tile.isLocal}
+      isScreenSharing={tile.isScreen}
+      isPinned={pinnedId === tile.id}
+      onPin={() => onPin(tile.id)}
+      onMute={!tile.isLocal && !tile.isScreen ? () => onRemoteMute(tile.id) : undefined}
+      onCameraOff={!tile.isLocal && !tile.isScreen ? () => onRemoteCameraOff(tile.id) : undefined}
     />
   );
 
@@ -47,24 +115,15 @@ export default function VideoGrid({
       {/* Pinned View */}
       {isPinned && (
         <div className="pinned-stage">
-          {pinnedId === 'local' 
-            ? renderVideoTile('local', localStream, null, true)
-            : renderVideoTile(pinnedId, remoteStreams.get(pinnedId), participants.get(pinnedId), false)
-          }
+          {renderTile(tiles.find(t => t.id === pinnedId) || tiles[0])}
         </div>
       )}
 
       {/* Grid View / Sidebar */}
       <div className={`video-list ${isPinned ? 'sidebar' : ''}`}>
-        {/* Local Video - if not pinned or if pinned is someone else */}
-        {(!isPinned || pinnedId !== 'local') && 
-          renderVideoTile('local', localStream, null, true)
-        }
-        
-        {/* Remote Videos */}
-        {Array.from(remoteStreams.entries()).map(([id, stream]) => {
-          if (isPinned && pinnedId === id) return null;
-          return renderVideoTile(id, stream, participants.get(id), false);
+        {tiles.map((tile) => {
+          if (isPinned && pinnedId === tile.id) return null;
+          return renderTile(tile);
         })}
       </div>
     </div>
@@ -77,6 +136,7 @@ function VideoTile({
   visitorId,
   isMuted, 
   isCameraOff, 
+  isHandRaised,
   isLocal, 
   isScreenSharing,
   isPinned,
@@ -89,19 +149,14 @@ function VideoTile({
   useEffect(() => {
     const videoElement = videoRef.current;
     if (videoElement && stream) {
-      // Always re-attach the stream when it changes
       videoElement.srcObject = stream;
-      
-      // Ensure video plays after attaching stream
       videoElement.play().catch(error => {
-        // Autoplay might be blocked, try muted
         console.log('Autoplay blocked, trying muted:', error);
         videoElement.muted = true;
         videoElement.play().catch(e => console.error('Video play failed:', e));
       });
     }
     
-    // Cleanup function
     return () => {
       if (videoElement) {
         videoElement.srcObject = null;
@@ -119,7 +174,7 @@ function VideoTile({
   };
 
   return (
-    <div className={`video-tile ${isCameraOff && !isScreenSharing ? 'camera-off' : ''}`}>
+    <div className={`video-tile ${isCameraOff && !isScreenSharing ? 'camera-off' : ''} ${isScreenSharing ? 'screen-sharing' : ''}`}>
       {isCameraOff && !isScreenSharing ? (
         <div className="video-avatar">
           {getInitials(userName)}
@@ -138,7 +193,7 @@ function VideoTile({
         <div className="video-tile-name">
           {isLocal && <span className="local-indicator"></span>}
           <span>{userName}</span>
-          {isScreenSharing && isLocal && (
+          {isScreenSharing && (
             <span className="badge">Screen</span>
           )}
         </div>
@@ -148,17 +203,23 @@ function VideoTile({
             onClick={(e) => { e.stopPropagation(); onPin(); }}
             title={isPinned ? "Unpin" : "Pin"}
           >
-            📌
+            {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
           </button>
           
-          {isMuted && (
-            <span className="status-icon muted" title="Muted">
-              🔇
+          {isHandRaised && (
+            <span className="status-icon hand-raised" title="Hand raised">
+              <Hand size={14} fill="currentColor" />
             </span>
           )}
-          {isCameraOff && (
+
+          {isMuted && (
+            <span className="status-icon muted" title="Muted">
+              <MicOff size={14} />
+            </span>
+          )}
+          {isCameraOff && !isScreenSharing && (
             <span className="status-icon" title="Camera off">
-              📷
+              <VideoOff size={14} />
             </span>
           )}
         </div>
@@ -171,7 +232,7 @@ function VideoTile({
             onClick={(e) => { e.stopPropagation(); onMute(); }}
             title="Mute this participant"
           >
-            🔇
+            <MicOff size={16} />
           </button>
         </div>
       )}

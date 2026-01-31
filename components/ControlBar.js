@@ -1,13 +1,29 @@
 import { useState } from 'react';
+import { 
+  Mic, 
+  MicOff, 
+  Video, 
+  VideoOff, 
+  MonitorUp, 
+  MonitorOff, 
+  MessageSquare, 
+  PhoneOff, 
+  Hand,
+  ChevronUp, 
+  ChevronDown,
+  Settings
+} from 'lucide-react';
 
 export default function ControlBar({
   isMuted,
   isCameraOff,
   isScreenSharing,
+  isHandRaised,
   unreadCount,
   onToggleMute,
   onToggleCamera,
   onToggleScreenShare,
+  onToggleHandRaise,
   onToggleChat,
   onLeave,
   audioDevices,
@@ -24,18 +40,18 @@ export default function ControlBar({
     <div className="control-bar">
       <div className="control-group">
         <button
-          className={`control-btn ${isMuted ? 'active' : ''}`}
+          className={`control-btn ${isMuted ? 'active danger' : ''}`}
           onClick={onToggleMute}
           title={isMuted ? 'Unmute' : 'Mute'}
         >
-          {isMuted ? '🔇' : '🎤'}
+          {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
         </button>
         <button 
           className="control-menu-btn"
           onClick={() => setShowAudioMenu(!showAudioMenu)}
           title="Select microphone"
         >
-          {showAudioMenu ? '▾' : '▴'}
+          {showAudioMenu ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
         {showAudioMenu && (
           <div className="control-menu">
@@ -58,18 +74,18 @@ export default function ControlBar({
 
       <div className="control-group">
         <button
-          className={`control-btn ${isCameraOff ? 'active' : ''}`}
+          className={`control-btn ${isCameraOff ? 'active danger' : ''}`}
           onClick={onToggleCamera}
           title={isCameraOff ? 'Turn on camera' : 'Turn off camera'}
         >
-          {isCameraOff ? '📷' : '🎥'}
+          {isCameraOff ? <VideoOff size={20} /> : <Video size={20} />}
         </button>
         <button 
           className="control-menu-btn"
           onClick={() => setShowVideoMenu(!showVideoMenu)}
           title="Select camera"
         >
-          {showVideoMenu ? '▾' : '▴'}
+          {showVideoMenu ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
         {showVideoMenu && (
           <div className="control-menu">
@@ -91,11 +107,19 @@ export default function ControlBar({
       </div>
 
       <button
+        className={`control-btn ${isHandRaised ? 'active warning' : ''}`}
+        onClick={onToggleHandRaise}
+        title={isHandRaised ? 'Lower hand' : 'Raise hand'}
+      >
+        <Hand size={20} fill={isHandRaised ? "currentColor" : "none"} />
+      </button>
+
+      <button
         className={`control-btn screen-share ${isScreenSharing ? 'active' : ''}`}
         onClick={onToggleScreenShare}
         title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
       >
-        {isScreenSharing ? '🖥️' : '💻'}
+        {isScreenSharing ? <MonitorOff size={20} /> : <MonitorUp size={20} />}
       </button>
 
       <button
@@ -103,7 +127,7 @@ export default function ControlBar({
         onClick={onToggleChat}
         title="Chat"
       >
-        💬
+        <MessageSquare size={20} />
         {unreadCount > 0 && (
           <span className="notification-badge">{unreadCount}</span>
         )}
@@ -114,7 +138,7 @@ export default function ControlBar({
         onClick={onLeave}
         title="Leave meeting"
       >
-        📞
+        <PhoneOff size={20} />
       </button>
     </div>
   );

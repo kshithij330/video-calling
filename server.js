@@ -128,6 +128,18 @@ app.prepare().then(() => {
       }
     });
 
+    // Toggle hand raise
+    socket.on('toggle-hand-raise', ({ roomId, isHandRaised }) => {
+      const room = rooms.get(roomId);
+      if (room && room.participants.has(socket.id)) {
+        room.participants.get(socket.id).isHandRaised = isHandRaised;
+        socket.to(roomId).emit('user-toggled-hand-raise', {
+          id: socket.id,
+          isHandRaised
+        });
+      }
+    });
+
     // Remote control: mute another user
     socket.on('remote-mute', ({ roomId, targetId }) => {
       const room = rooms.get(roomId);
