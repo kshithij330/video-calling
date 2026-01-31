@@ -149,9 +149,9 @@ export default function Home() {
             <div className="team-card">
               <div className="team-avatar">
                 {/* Replace src with actual image path */}
-                <img src="/team/trisha.png" alt="Trisha SS Bellman" />
+                <img src="/team/trisha.png" alt="Trisha SS Belman" />
               </div>
-              <h3>Trisha SS Bellman</h3>
+              <h3>Trisha SS Belman</h3>
               <span className="team-role">QA Tester</span>
             </div>
           </div>
@@ -159,7 +159,14 @@ export default function Home() {
 
         {/* Footer */}
         <footer className="landing-footer">
-          <p>© 2025 MeetUp. All rights reserved.</p>
+          <div className="footer-logos">
+            <a href="https://www.belmans4kids.com/" target="_blank" rel="noopener noreferrer">
+              <img src="/footer/belmans4kids.png" alt="Belmans for Kids" />
+            </a>
+            <a href="https://www.belmans4kids.com/b_to_b_homepage" target="_blank" rel="noopener noreferrer">
+              <img src="/footer/belmans4business.png" alt="Belmans for Business" />
+            </a>
+          </div>
         </footer>
       </div>
     </>

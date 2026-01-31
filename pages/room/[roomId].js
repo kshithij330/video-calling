@@ -28,7 +28,8 @@ export default function Room() {
   const [messages, setMessages] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [pinnedId, setPinnedId] = useState(null);
+  const [pinnedIds, setPinnedIds] = useState([]);
+  const [privateRecipient, setPrivateRecipient] = useState(null);
   
   const [audioDevices, setAudioDevices] = useState([]);
   const [videoDevices, setVideoDevices] = useState([]);
@@ -38,7 +39,7 @@ export default function Room() {
   const { socket, isConnected } = useSocket();
 
   const handleAutoPin = useCallback((id) => {
-    setPinnedId(id);
+    setPinnedIds(prev => prev.includes(id) ? prev : [...prev, id]);
   }, []);
 
   const {
@@ -58,6 +59,8 @@ export default function Room() {
     toggleHandRaise,
     remoteMute,
     remoteCameraOff,
+    switchAudioInput,
+    switchVideoInput,
     cleanup
   } = useWebRTC({ socket, roomId, userName, onAutoPin: handleAutoPin });
 
@@ -95,8 +98,18 @@ export default function Room() {
     };
   }, [socket, isJoined, showChat]);
 
-  const sendMessage = (message) => {
-    socket?.emit('chat-message', { roomId, message });
+  const sendMessage = (messagePayload) => {
+    // messagePayload is { type, content, to }
+    socket?.emit('chat-message', { roomId, message: messagePayload, to: messagePayload.to });
+  };
+
+  const handlePrivateMessage = (toId, toName) => {
+    if (toId) {
+      setPrivateRecipient({ id: toId, name: toName });
+      setShowChat(true);
+    } else {
+      setPrivateRecipient(null);
+    }
   };
 
   // Device management
@@ -228,8 +241,11 @@ export default function Room() {
               participants={participants}
               localUserName={userName}
               localHandRaised={isHandRaised}
-              pinnedId={pinnedId}
-              onPin={(id) => setPinnedId(prev => prev === id ? null : id)}
+              pinnedIds={pinnedIds}
+              onTogglePin={(id) => setPinnedIds(prev => 
+                prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]
+              )}
+              onPrivateMessage={handlePrivateMessage}
               isMuted={isMuted}
               isCameraOff={isCameraOff}
               onRemoteMute={remoteMute}
@@ -243,6 +259,9 @@ export default function Room() {
               onSendMessage={sendMessage}
               onClose={() => setShowChat(false)}
               currentUserId={socket?.id}
+              privateRecipient={privateRecipient}
+              onClearPrivateRecipient={() => setPrivateRecipient(null)}
+              onReplyPrivate={(senderId, senderName) => handlePrivateMessage(senderId, senderName)}
             />
           )}
         </div>
@@ -268,11 +287,11 @@ export default function Room() {
           selectedVideoId={selectedVideoId}
           onChangeAudio={(id) => {
             setSelectedAudioId(id);
-            // Device switching logic can be added to useWebRTC if needed
+            switchAudioInput(id);
           }}
           onChangeVideo={(id) => {
             setSelectedVideoId(id);
-            // Device switching logic can be added to useWebRTC if needed
+            switchVideoInput(id);
           }}
         />
       </div>

@@ -167,7 +167,7 @@ app.prepare().then(() => {
     });
 
     // Chat message
-    socket.on('chat-message', ({ roomId, message }) => {
+    socket.on('chat-message', ({ roomId, message, to }) => {
       const room = rooms.get(roomId);
       if (room) {
         const participant = room.participants.get(socket.id);
@@ -176,10 +176,20 @@ app.prepare().then(() => {
           senderId: socket.id,
           senderName: participant?.userName || 'Unknown',
           message,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          isPrivate: !!to,
+          to // Recipient ID if private
         };
-        room.messages.push(chatMessage);
-        io.to(roomId).emit('new-message', chatMessage);
+
+        if (to) {
+          // Private message: emit to sender and recipient only
+          socket.emit('new-message', chatMessage); // Sender
+          io.to(to).emit('new-message', chatMessage); // Recipient
+        } else {
+          // Public message: emit to everyone and store in history
+          room.messages.push(chatMessage);
+          io.to(roomId).emit('new-message', chatMessage);
+        }
       }
     });
 

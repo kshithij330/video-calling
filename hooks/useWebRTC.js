@@ -407,6 +407,73 @@ export function useWebRTC({ socket, roomId, userName, onAutoPin }) {
     };
   }, [socket, handleOffer, handleAnswer, handleIceCandidate, createPeerConnection, removePeerConnection, forceMute, forceCameraOff]);
 
+  const switchAudioInput = useCallback(async (deviceId) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId } },
+        video: false
+      });
+      const newAudioTrack = stream.getAudioTracks()[0];
+
+      if (localStreamRef.current) {
+        const oldAudioTrack = localStreamRef.current.getAudioTracks()[0];
+        if (oldAudioTrack) oldAudioTrack.stop();
+        
+        localStreamRef.current.removeTrack(oldAudioTrack);
+        localStreamRef.current.addTrack(newAudioTrack);
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks())); // Trigger re-render
+      }
+
+      // Replace track in all peer connections
+      peerConnectionsRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+        if (sender) {
+          sender.replaceTrack(newAudioTrack);
+        }
+      });
+      
+      // If was muted, respect that (optional, but good UX to unmute on switch or keep state)
+      // For now we assume switching device means we want to use it, so we leave it enabled.
+      // If we wanted to keep mute state: newAudioTrack.enabled = !isMuted;
+
+    } catch (error) {
+      console.error('Error switching audio device:', error);
+    }
+  }, []);
+
+  const switchVideoInput = useCallback(async (deviceId) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId } },
+        audio: false
+      });
+      const newVideoTrack = stream.getVideoTracks()[0];
+
+      if (localStreamRef.current) {
+        const oldVideoTrack = localStreamRef.current.getVideoTracks()[0];
+        if (oldVideoTrack) oldVideoTrack.stop();
+
+        localStreamRef.current.removeTrack(oldVideoTrack);
+        localStreamRef.current.addTrack(newVideoTrack);
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      }
+
+      // Replace track in all peer connections
+      peerConnectionsRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+          sender.replaceTrack(newVideoTrack);
+        }
+      });
+
+      setIsCameraOff(false); // Enable camera when switching
+      if (socket) socket.emit('toggle-camera', { roomId, isCameraOff: false });
+
+    } catch (error) {
+      console.error('Error switching video device:', error);
+    }
+  }, [socket, roomId]);
+
   return {
     localStream,
     localScreenStream,
@@ -422,6 +489,8 @@ export function useWebRTC({ socket, roomId, userName, onAutoPin }) {
     toggleCamera,
     toggleScreenShare,
     toggleHandRaise,
+    switchAudioInput,
+    switchVideoInput,
     remoteMute,
     remoteCameraOff,
     cleanup

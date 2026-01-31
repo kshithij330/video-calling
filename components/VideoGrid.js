@@ -1,12 +1,12 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react'; // Re-trigger build
+
 import { 
   Pin, 
   PinOff, 
   MicOff, 
   VideoOff, 
-  Hand, 
-  Maximize2, 
-  MoreVertical 
+  Hand,
+  MessageCircle
 } from 'lucide-react';
 
 export default function VideoGrid({
@@ -17,21 +17,20 @@ export default function VideoGrid({
   participants,
   localUserName,
   localHandRaised,
-  pinnedId,
-  onPin,
+  pinnedIds = [], // Now an array for multi-pin
+  onTogglePin,
+  onPrivateMessage,
   isMuted,
   isCameraOff,
   onRemoteMute,
   onRemoteCameraOff
 }) {
-  const isPinned = pinnedId !== null;
-  
-  // Calculate total number of tiles to determine grid size
-  const getTiles = () => {
-    const tiles = [];
+  // Calculate all tiles
+  const tiles = useMemo(() => {
+    const result = [];
     
     // Local camera
-    tiles.push({
+    result.push({
       id: 'local',
       stream: localStream,
       participant: null,
@@ -41,7 +40,7 @@ export default function VideoGrid({
     
     // Local screen
     if (localScreenStream) {
-      tiles.push({
+      result.push({
         id: 'local-screen',
         stream: localScreenStream,
         participant: null,
@@ -52,9 +51,8 @@ export default function VideoGrid({
     
     // Remote participants
     participants.forEach((p, id) => {
-      // Camera
       if (remoteStreams.has(id)) {
-        tiles.push({
+        result.push({
           id,
           stream: remoteStreams.get(id),
           participant: p,
@@ -63,9 +61,8 @@ export default function VideoGrid({
         });
       }
       
-      // Screen
-      if (remoteScreenStreams.has(id)) {
-        tiles.push({
+      if (remoteScreenStreams && remoteScreenStreams.has(id)) {
+        result.push({
           id: `${id}-screen`,
           stream: remoteScreenStreams.get(id),
           participant: p,
@@ -75,22 +72,36 @@ export default function VideoGrid({
       }
     });
 
-    return tiles;
-  };
+    return result;
+  }, [localStream, localScreenStream, remoteStreams, remoteScreenStreams, participants]);
 
-  const tiles = getTiles();
-  const totalTiles = tiles.length;
+  const hasPins = pinnedIds.length > 0;
+  const pinnedTiles = tiles.filter(t => pinnedIds.includes(t.id));
+  const unpinnedTiles = tiles.filter(t => !pinnedIds.includes(t.id));
+  const totalUnpinned = unpinnedTiles.length;
 
+  // Calculate optimal grid layout for unpinned tiles
   const getGridClass = () => {
-    if (isPinned) return 'grid-pinned';
-    if (totalTiles === 1) return 'grid-1';
-    if (totalTiles === 2) return 'grid-2';
-    if (totalTiles <= 4) return 'grid-3-4';
-    if (totalTiles <= 6) return 'grid-5-6';
-    return 'grid-7-9';
+    if (hasPins) return 'has-pins';
+    const count = tiles.length;
+    if (count === 1) return 'grid-1';
+    if (count === 2) return 'grid-2';
+    if (count <= 4) return 'grid-4';
+    if (count <= 6) return 'grid-6';
+    if (count <= 9) return 'grid-9';
+    return 'grid-many';
   };
 
-  const renderTile = (tile) => (
+  // Calculate pinned stage layout
+  const getPinnedGridClass = () => {
+    const count = pinnedTiles.length;
+    if (count === 1) return 'pinned-1';
+    if (count === 2) return 'pinned-2';
+    if (count <= 4) return 'pinned-4';
+    return 'pinned-many';
+  };
+
+  const renderTile = (tile, inSidebar = false) => (
     <VideoTile
       key={tile.id}
       visitorId={tile.id}
@@ -103,29 +114,34 @@ export default function VideoGrid({
       isHandRaised={tile.isScreen ? false : (tile.participant?.isHandRaised || (tile.isLocal ? localHandRaised : false))}
       isLocal={tile.isLocal}
       isScreenSharing={tile.isScreen}
-      isPinned={pinnedId === tile.id}
-      onPin={() => onPin(tile.id)}
+      isPinned={pinnedIds.includes(tile.id)}
+      onPin={() => onTogglePin(tile.id)}
+      onPrivateMessage={!tile.isLocal ? () => onPrivateMessage(tile.participant ? tile.id : null, tile.participant?.userName) : undefined}
       onMute={!tile.isLocal && !tile.isScreen ? () => onRemoteMute(tile.id) : undefined}
       onCameraOff={!tile.isLocal && !tile.isScreen ? () => onRemoteCameraOff(tile.id) : undefined}
+      inSidebar={inSidebar}
     />
   );
 
   return (
     <div className={`video-grid ${getGridClass()}`}>
-      {/* Pinned View */}
-      {isPinned && (
-        <div className="pinned-stage">
-          {renderTile(tiles.find(t => t.id === pinnedId) || tiles[0])}
+      {/* Pinned Stage - when there are pinned tiles */}
+      {hasPins && (
+        <div className={`pinned-stage ${getPinnedGridClass()}`}>
+          {pinnedTiles.map(tile => renderTile(tile, false))}
         </div>
       )}
 
-      {/* Grid View / Sidebar */}
-      <div className={`video-list ${isPinned ? 'sidebar' : ''}`}>
-        {tiles.map((tile) => {
-          if (isPinned && pinnedId === tile.id) return null;
-          return renderTile(tile);
-        })}
-      </div>
+      {/* Sidebar for unpinned tiles when pins exist, or main grid otherwise */}
+      {hasPins ? (
+        <div className="video-sidebar">
+          {unpinnedTiles.map(tile => renderTile(tile, true))}
+        </div>
+      ) : (
+        <div className="video-main-grid">
+          {tiles.map(tile => renderTile(tile, false))}
+        </div>
+      )}
     </div>
   );
 }
@@ -141,8 +157,10 @@ function VideoTile({
   isScreenSharing,
   isPinned,
   onPin,
+  onPrivateMessage,
   onMute,
-  onCameraOff 
+  onCameraOff,
+  inSidebar
 }) {
   const videoRef = useRef(null);
 
@@ -174,7 +192,7 @@ function VideoTile({
   };
 
   return (
-    <div className={`video-tile ${isCameraOff && !isScreenSharing ? 'camera-off' : ''} ${isScreenSharing ? 'screen-sharing' : ''}`}>
+    <div className={`video-tile ${isCameraOff && !isScreenSharing ? 'camera-off' : ''} ${isScreenSharing ? 'screen-sharing' : ''} ${isPinned ? 'is-pinned' : ''} ${inSidebar ? 'in-sidebar' : ''}`}>
       {isCameraOff && !isScreenSharing ? (
         <div className="video-avatar">
           {getInitials(userName)}
@@ -206,6 +224,16 @@ function VideoTile({
             {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
           </button>
           
+          {onPrivateMessage && (
+            <button
+              className="status-icon action-btn"
+              onClick={(e) => { e.stopPropagation(); onPrivateMessage(); }}
+              title="Message privately"
+            >
+              <MessageCircle size={14} />
+            </button>
+          )}
+          
           {isHandRaised && (
             <span className="status-icon hand-raised" title="Hand raised">
               <Hand size={14} fill="currentColor" />
@@ -225,7 +253,7 @@ function VideoTile({
         </div>
       </div>
 
-      {!isLocal && (
+      {!isLocal && onMute && (
         <div className="video-tile-controls">
           <button 
             className="tile-control-btn" 

@@ -3,7 +3,15 @@ import { Send, X, MessageSquare, Smile, Search, Loader2 } from 'lucide-react';
 
 const GIPHY_API_KEY = 'WkByA9zfm6wqfkLmzH9PjcYiSl8DRGGi'; 
 
-export default function ChatPanel({ messages, onSendMessage, onClose, currentUserId }) {
+export default function ChatPanel({ 
+  messages, 
+  onSendMessage, 
+  onClose, 
+  currentUserId,
+  privateRecipient,
+  onClearPrivateRecipient,
+  onReplyPrivate
+}) {
   const [inputText, setInputText] = useState('');
   const [showGifs, setShowGifs] = useState(false);
   const [gifSearch, setGifSearch] = useState('');
@@ -17,7 +25,7 @@ export default function ChatPanel({ messages, onSendMessage, onClose, currentUse
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, privateRecipient]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -50,15 +58,22 @@ export default function ChatPanel({ messages, onSendMessage, onClose, currentUse
   };
 
   const handleSendGif = (gifUrl) => {
-    // We send the URL as a special message or just as text
-    onSendMessage({ type: 'gif', content: gifUrl });
+    onSendMessage({ 
+      type: 'gif', 
+      content: gifUrl,
+      to: privateRecipient?.id 
+    });
     setShowGifs(false);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (inputText.trim()) {
-      onSendMessage({ type: 'text', content: inputText.trim() });
+      onSendMessage({ 
+        type: 'text', 
+        content: inputText.trim(),
+        to: privateRecipient?.id 
+      });
       setInputText('');
     }
   };
@@ -93,14 +108,32 @@ export default function ChatPanel({ messages, onSendMessage, onClose, currentUse
           messages.map((msg, idx) => {
             const isOwn = msg.senderId === currentUserId;
             const messageData = typeof msg.message === 'object' ? msg.message : { type: 'text', content: msg.message };
+            const isPrivate = msg.isPrivate;
             
+            // Logic to handle replying when clicking a received private message
+            const handleMessageClick = () => {
+              if (isPrivate && !isOwn && onReplyPrivate) {
+                onReplyPrivate(msg.senderId, msg.senderName);
+              }
+            };
+
             return (
               <div 
                 key={msg.id || idx} 
-                className={`chat-message ${isOwn ? 'own' : ''}`}
+                className={`chat-message ${isOwn ? 'own' : ''} ${isPrivate ? 'private-msg' : ''}`}
+                onClick={handleMessageClick}
+                title={isPrivate && !isOwn ? "Click to reply privately" : ""}
+                style={{ cursor: isPrivate && !isOwn ? 'pointer' : 'default' }}
               >
                 <div className="chat-message-info">
-                  <span className="chat-sender">{isOwn ? 'You' : msg.senderName}</span>
+                  <span className="chat-sender">
+                    {isOwn ? 'You' : msg.senderName}
+                    {isPrivate && (
+                      <span className="private-badge">
+                        (Privately {isOwn ? `to ${privateRecipient?.id === msg.to ? privateRecipient.name : 'Participant'}` : 'to You'})
+                      </span>
+                    )}
+                  </span>
                   <span className="chat-time">{formatTime(msg.timestamp)}</span>
                 </div>
                 <div className="chat-message-bubble">
@@ -153,6 +186,19 @@ export default function ChatPanel({ messages, onSendMessage, onClose, currentUse
         </div>
       )}
 
+      {privateRecipient && (
+        <div className="private-chat-banner">
+          <span>Privately chatting with <strong>{privateRecipient.name}</strong></span>
+          <button 
+            className="clear-private-btn"
+            onClick={onClearPrivateRecipient}
+            title="Stop private chat"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       <div className="chat-input-container">
         <form className="chat-input-area" onSubmit={handleSubmit}>
           <button 
@@ -167,7 +213,7 @@ export default function ChatPanel({ messages, onSendMessage, onClose, currentUse
             <input
               type="text"
               className="chat-input"
-              placeholder="Send a message"
+              placeholder={privateRecipient ? `Message ${privateRecipient.name}...` : "Send a message"}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
             />
