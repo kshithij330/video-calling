@@ -96,9 +96,7 @@ export default function Room() {
   }, [socket, isJoined, showChat]);
 
   const sendMessage = (message) => {
-    if (message.trim()) {
-      socket?.emit('chat-message', { roomId, message: message.trim() });
-    }
+    socket?.emit('chat-message', { roomId, message });
   };
 
   // Device management
@@ -156,7 +154,20 @@ export default function Room() {
   return (
     <>
       <Head>
-        <title>Room: {roomId} | MeetUp</title>
+        <title>Joining Room: {roomId} | MeetUp</title>
+        <meta name="description" content={`Join my video call on MeetUp in room ${roomId}. Secure and private.`} />
+        
+        {/* Open Graph / Facebook / WhatsApp */}
+        <meta property="og:type" content="website" />
+        <meta property="og:title" content={`MeetUp Call - Room ${roomId}`} />
+        <meta property="og:description" content="Click the link to join my private video call. No account needed." />
+        <meta property="og:image" content="/preview.png" />
+        
+        {/* Twitter */}
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={`Join MeetUp Call: ${roomId}`} />
+        <meta name="twitter:description" content="Secure, high-quality video calling. Join now." />
+        <meta name="twitter:image" content="/preview.png" />
       </Head>
 
       {showNameModal && (
