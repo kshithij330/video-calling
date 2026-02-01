@@ -219,6 +219,15 @@ app.prepare().then(() => {
       }
     });
 
+    // Update room settings
+    socket.on('update-room-settings', ({ roomId, settings }) => {
+      const room = rooms.get(roomId);
+      if (room) {
+        room.settings = { ...room.settings, ...settings };
+        io.to(roomId).emit('room-settings-updated', room.settings);
+      }
+    });
+
     // Remote control: mute another user
     socket.on('remote-mute', ({ roomId, targetId }) => {
       const room = rooms.get(roomId);

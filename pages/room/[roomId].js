@@ -20,6 +20,8 @@ import {
 import VideoGrid from '../../components/VideoGrid';
 import ControlBar from '../../components/ControlBar';
 import ChatPanel from '../../components/ChatPanel';
+import PeoplePanel from '../../components/PeoplePanel';
+import Whiteboard from '../../components/Whiteboard';
 import { useWebRTC } from '../../hooks/useWebRTC';
 import { useSocket } from '../../hooks/useSocket';
 
@@ -37,9 +39,11 @@ export default function Room() {
   const [pinnedIds, setPinnedIds] = useState([]);
   const [privateChatTarget, setPrivateChatTarget] = useState(null); // { id, name }
   const [showSettings, setShowSettings] = useState(false);
+  const [showPeople, setShowPeople] = useState(false);
   const [roomSettings, setRoomSettings] = useState({ isContinuousChat: false });
   const [roomStartTime, setRoomStartTime] = useState(null);
   const [meetingDuration, setMeetingDuration] = useState('00:00');
+  const [showWhiteboard, setShowWhiteboard] = useState(false);
   
   const [recordingState, setRecordingState] = useState({ isRecording: false, startTime: null, initiatorId: null });
   const [recordingDuration, setRecordingDuration] = useState('00:00');
@@ -54,6 +58,20 @@ export default function Room() {
   const animationFrameRef = useRef(null);
   const timerWorkerRef = useRef(null);
   const recentMessagesRef = useRef([]); // For recording canvas notifications
+  
+  // Refs for stable recording access (prevent Effect re-runs)
+  const participantsRef = useRef(new Map());
+  const localStreamRef = useRef(null);
+  const remoteStreamsRef = useRef(new Map());
+  const localScreenStreamRef = useRef(null);
+  const remoteScreenStreamsRef = useRef(new Map());
+  const isMutedRef = useRef(false);
+  const userNameRef = useRef('');
+  
+  // Per-participant recording refs
+  const participantRecordersRef = useRef(new Map());
+  const participantBlobsRef = useRef(new Map());
+  const [sessionParticipantBlobs, setSessionParticipantBlobs] = useState(null);
   
   const [audioDevices, setAudioDevices] = useState([]);
   const [videoDevices, setVideoDevices] = useState([]);
@@ -87,6 +105,54 @@ export default function Room() {
     switchVideoInput,
     cleanup
   } = useWebRTC({ socket, roomId, userName, onAutoPin: handleAutoPin });
+
+  // Keep refs in sync for recording engine
+  useEffect(() => { participantsRef.current = participants; }, [participants]);
+  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+  useEffect(() => { remoteStreamsRef.current = remoteStreams; }, [remoteStreams]);
+  useEffect(() => { remoteScreenStreamsRef.current = remoteScreenStreams; }, [remoteScreenStreams]);
+  useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
+  useEffect(() => { userNameRef.current = userName; }, [userName]);
+  useEffect(() => { localScreenStreamRef.current = localScreenStream; }, [localScreenStream]);
+
+  // Handle participant-specific recording
+  const startParticipantRecorder = useCallback((id, stream, name) => {
+    if (!stream || !recordingState.isRecording || participantRecordersRef.current.has(id)) return;
+    if (!stream.active) return;
+
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      if (chunks.length > 0) {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        participantBlobsRef.current.set(id, { name, blob });
+      }
+    };
+    recorder.start(1000);
+    participantRecordersRef.current.set(id, recorder);
+  }, [recordingState.isRecording]);
+
+  useEffect(() => {
+    if (!recordingState.isRecording) return;
+    const monitor = () => {
+      if (localStreamRef.current && !participantRecordersRef.current.has('local')) {
+        startParticipantRecorder('local', localStreamRef.current, userNameRef.current);
+      }
+      remoteStreamsRef.current.forEach((stream, id) => {
+        if (!participantRecordersRef.current.has(id)) {
+          const p = participantsRef.current.get(id);
+          startParticipantRecorder(id, stream, p?.userName || 'Unknown');
+        }
+      });
+      if (localScreenStreamRef.current && !participantRecordersRef.current.has('local-screen')) {
+        startParticipantRecorder('local-screen', localScreenStreamRef.current, `${userNameRef.current}'s Screen`);
+      }
+    };
+    monitor();
+    const interval = setInterval(monitor, 2000);
+    return () => clearInterval(interval);
+  }, [recordingState.isRecording, startParticipantRecorder]);
 
   // Handle joining room
   const joinRoom = async (e) => {
@@ -187,301 +253,99 @@ export default function Room() {
     return () => clearInterval(interval);
   }, [recordingState.isRecording, recordingState.startTime]);
 
-  // Recording Engine
   useEffect(() => {
-    if (!socket || !isJoined || !recordingState.isRecording) {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        stopLocalRecording();
-      }
-      return;
-    }
+    if (!socket || !isJoined) return;
 
-    if (recordingState.initiatorId === socket.id) {
-      startLocalRecording();
+    if (recordingState.isRecording && recordingState.initiatorId === socket.id) {
+      if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
+        startLocalRecording();
+      }
+    } else if (!recordingState.isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      stopLocalRecording();
     }
 
     async function startLocalRecording() {
       try {
         chunksRef.current = [];
-        
-        // 1. Setup Audio Mixing
+        participantBlobsRef.current.clear();
+        participantRecordersRef.current.clear();
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         audioCtxRef.current = audioCtx;
         const dest = audioCtx.createMediaStreamDestination();
         audioDestRef.current = dest;
 
-        // Mix all audio tracks (Microphones and Screen Shares)
-        const streamsToMix = [
-          localStream, 
-          localScreenStream,
-          ...Array.from(remoteStreams.values()),
-          ...Array.from(remoteScreenStreams.values())
-        ];
-        
+        const streamsToMix = [localStreamRef.current, localScreenStreamRef.current, ...Array.from(remoteStreamsRef.current.values())].filter(Boolean);
         streamsToMix.forEach(stream => {
-          if (stream && stream.getAudioTracks().length > 0) {
+          if (stream.getAudioTracks().length > 0) {
             const source = audioCtx.createMediaStreamSource(stream);
             source.connect(dest);
           }
         });
 
-        // 2. Setup Video Compositing (Canvas)
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
-        const videoStream = canvas.captureStream(30); // 30 FPS
+        const videoStream = canvas.captureStream(30);
 
-        // Helper to draw image/video with "cover" behavior (prevent stretching)
         const drawImageProp = (img, x, y, w, h) => {
           const iw = img.videoWidth || img.width;
           const ih = img.videoHeight || img.height;
           const r = Math.min(w / iw, h / ih);
           let nw = iw * r, nh = ih * r, cx, cy, cw, ch, ar = 1;
-
-          if (nw < w) ar = w / nw;                             
-          if (Math.abs(ar - 1) < 1e-14 && nh < h) ar = h / nh; 
-          nw *= ar; nh *= ar;
-
-          cw = iw / (nw / w);
-          ch = ih / (nh / h);
-          cx = (iw - cw) * 0.5;
-          cy = (ih - ch) * 0.5;
-
-          if (cx < 0) cx = 0; if (cy < 0) cy = 0;
-          if (cw > iw) cw = iw; if (ch > ih) ch = ih;
-
+          if (nw < w) ar = w / nw; if (Math.abs(ar - 1) < 1e-14 && nh < h) ar = h / nh;
+          nw *= ar; nh *= ar; cw = iw / (nw / w); ch = ih / (nh / h); cx = (iw - cw) * 0.5; cy = (ih - ch) * 0.5;
+          if (cx < 0) cx = 0; if (cy < 0) cy = 0; if (cw > iw) cw = iw; if (ch > ih) ch = ih;
           ctx.drawImage(img, cx, cy, cw, ch, x, y, w, h);
         };
 
-        // Helper to draw a microphone icon (muted or unmuted)
-        const drawMicStatus = (x, y, isMuted) => {
-          const size = 32;
-          ctx.save();
-          ctx.translate(x - size, y);
-          
-          // Background circle
-          ctx.fillStyle = isMuted ? 'rgba(239, 68, 68, 0.9)' : 'rgba(0, 0, 0, 0.6)';
-          ctx.beginPath();
-          ctx.arc(size/2, size/2, size/2, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-
-          // Microphone icon
-          ctx.strokeStyle = isMuted ? 'white' : '#22c55e';
-          ctx.lineWidth = 2;
-          ctx.lineCap = 'round';
-          
-          // U-shape
-          ctx.beginPath();
-          ctx.arc(size/2, size/2 - 2, 4.5, 0, Math.PI);
-          ctx.stroke();
-          
-          // Stem
-          ctx.beginPath();
-          ctx.moveTo(size/2, size/2 + 2.5);
-          ctx.lineTo(size/2, size/2 + 6);
-          ctx.stroke();
-
-          if (isMuted) {
-            // Slash
-            ctx.beginPath();
-            ctx.moveTo(size/2 - 6, size/2 - 7);
-            ctx.lineTo(size/2 + 6, size/2 + 5);
-            ctx.stroke();
-          }
-          
-          ctx.restore();
+        const draw = () => {
+          if (!recordingState.isRecording) return;
+          ctx.fillStyle = '#09090b'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          const activeStreams = [{ id: 'local', stream: localStreamRef.current, name: userNameRef.current }, 
+            ...(localScreenStreamRef.current ? [{ id: 'local-screen', stream: localScreenStreamRef.current, name: "Screen" }] : []),
+            ...Array.from(participantsRef.current.entries()).flatMap(([id, p]) => {
+              const res = [];
+              if (remoteStreamsRef.current.has(id)) res.push({ id, stream: remoteStreamsRef.current.get(id), name: p.userName });
+              return res;
+            })].filter(s => s.stream);
+          if (activeStreams.length === 0) return;
+          const count = activeStreams.length, cols = Math.ceil(Math.sqrt(count)), rows = Math.ceil(count / cols), w = canvas.width / cols, h = canvas.height / rows;
+          activeStreams.forEach((s, i) => {
+            const col = i % cols, row = Math.floor(i / cols), x = col * w, y = row * h;
+            const videoElem = document.getElementById(`video-${s.id}`);
+            if (videoElem && videoElem.readyState >= 2) drawImageProp(videoElem, x, y, w, h);
+          });
         };
 
-        // 0. Setup Background Timer Worker to prevent freezing in background tabs
-        const workerCode = `
-          let timer = null;
-          self.onmessage = (e) => {
-            if (e.data === 'start') {
-              if (timer) clearInterval(timer);
-              timer = setInterval(() => self.postMessage('tick'), 1000/30);
-            } else if (e.data === 'stop') {
-              clearInterval(timer);
-              timer = null;
-            }
-          };
-        `;
+        const workerCode = `let t=null;self.onmessage=(e)=>{if(e.data==='start'){if(t)clearInterval(t);t=setInterval(()=>self.postMessage('tick'),1000/30)}else if(e.data==='stop'){clearInterval(t);t=null}}`;
         const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
         const timerWorker = new Worker(URL.createObjectURL(workerBlob));
         timerWorkerRef.current = timerWorker;
-
-        // Drawing loop
-        const draw = () => {
-          if (!recordingState.isRecording) return;
-          
-          ctx.fillStyle = '#09090b';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-          const activeStreams = [
-            { id: 'local', stream: localStream, name: userName },
-            ...(localScreenStream ? [{ id: 'local-screen', stream: localScreenStream, name: `${userName}'s Screen` }] : []),
-            ...Array.from(participants.entries()).flatMap(([id, p]) => {
-              const res = [];
-              if (remoteStreams.has(id)) {
-                res.push({ id, stream: remoteStreams.get(id), name: p.userName });
-              }
-              if (remoteScreenStreams.has(id)) {
-                res.push({ id: `${id}-screen`, stream: remoteScreenStreams.get(id), name: `${p.userName}'s Screen` });
-              }
-              return res;
-            })
-          ].filter(s => s.stream);
-
-          if (activeStreams.length === 0) return;
-
-          // Calculate grid
-          const count = activeStreams.length;
-          const cols = Math.ceil(Math.sqrt(count));
-          const rows = Math.ceil(count / cols);
-          const w = canvas.width / cols;
-          const h = canvas.height / rows;
-
-          activeStreams.forEach((s, i) => {
-            const col = i % cols;
-            const row = Math.floor(i / cols);
-            const x = col * w;
-            const y = row * h;
-
-            // Draw video or avatar
-            const videoElem = document.getElementById(`video-${s.id}`);
-            if (videoElem && videoElem.readyState >= 2) {
-              drawImageProp(videoElem, x, y, w, h);
-            } else {
-              // Placeholder
-              ctx.fillStyle = '#18181b';
-              ctx.fillRect(x + 5, y + 5, w - 10, h - 10);
-              ctx.fillStyle = '#ffffff';
-              ctx.font = `${Math.min(w, h) / 8}px Inter`;
-              ctx.textAlign = 'center';
-              ctx.fillText(s.name, x + w / 2, y + h / 2);
-            }
-
-            // Draw status indicator (Mic)
-            const participantObj = s.id === 'local' ? { isMuted } : participants.get(s.id);
-            drawMicStatus(x + w - 10, y + 10, participantObj?.isMuted);
-
-            // Draw name tag
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            ctx.font = '14px Inter';
-            const nameLabel = s.id === 'local' ? `${s.name} (You)` : s.name;
-            const nameWidth = ctx.measureText(nameLabel).width;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-              ctx.roundRect(x + 10, y + h - 35, nameWidth + 20, 25, 4);
-            } else {
-              ctx.rect(x + 10, y + h - 35, nameWidth + 20, 25);
-            }
-            ctx.fill();
-            ctx.fillStyle = 'white';
-            ctx.textAlign = 'left';
-            ctx.fillText(nameLabel, x + 20, y + h - 17);
-          });
-
-
-          // Draw Chat Notifications
-          const now = Date.now();
-          const recentMsgs = recentMessagesRef.current.filter(m => now - m.addedAt < 5000);
-          
-          recentMsgs.forEach((msg, idx) => {
-            const timeAlive = now - msg.addedAt;
-            const opacity = timeAlive > 4000 ? (5000 - timeAlive) / 1000 : 1;
-            const slideIn = timeAlive < 500 ? (timeAlive / 500) * 320 : 320;
-            
-            ctx.save();
-            ctx.globalAlpha = opacity;
-            const bubbleY = 100 + (idx * 80);
-            const bubbleX = canvas.width - slideIn;
-            
-            // Bubble background
-            ctx.fillStyle = 'rgba(24, 24, 27, 0.9)';
-            ctx.beginPath();
-            if (ctx.roundRect) {
-              ctx.roundRect(bubbleX, bubbleY, 300, 60, 10);
-            } else {
-              ctx.rect(bubbleX, bubbleY, 300, 60);
-            }
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-            ctx.stroke();
-
-            // Bubble content
-            ctx.fillStyle = '#3b82f6';
-            ctx.font = 'bold 12px Inter';
-            ctx.fillText(msg.senderName, bubbleX + 15, bubbleY + 25);
-            
-            ctx.fillStyle = 'white';
-            ctx.font = '14px Inter';
-            const messageText = typeof msg.message === 'object' ? (msg.message.content || '') : msg.message;
-            const truncatedMsg = messageText.length > 35 ? messageText.slice(0, 32) + '...' : messageText;
-            ctx.fillText(truncatedMsg, bubbleX + 15, bubbleY + 45);
-            ctx.restore();
-          });
-        };
-
         timerWorker.onmessage = () => draw();
         timerWorker.postMessage('start');
 
-        // 3. Combine and Record
-        const combinedStream = new MediaStream([
-          ...videoStream.getVideoTracks(),
-          ...dest.stream.getAudioTracks()
-        ]);
-
-        const recorder = new MediaRecorder(combinedStream, {
-          mimeType: 'video/webm;codecs=vp8,opus'
-        });
-
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunksRef.current.push(e.data);
+        const combinedStream = new MediaStream([...videoStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+        const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp8,opus' });
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+        recorder.onstop = () => {
+          setRecordedBlob(new Blob(chunksRef.current, { type: 'video/webm' }));
+          setTimeout(() => {
+            setSessionParticipantBlobs(new Map(participantBlobsRef.current));
+            setShowRecordingModal(true);
+          }, 500);
         };
-
-        recorder.onstop = async () => {
-          let blob = new Blob(chunksRef.current, { type: 'video/webm' });
-          
-          setRecordedBlob(blob);
-          setShowRecordingModal(true);
-          
-          // Cleanup
-          if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-          if (timerWorkerRef.current) {
-            timerWorkerRef.current.postMessage('stop');
-            timerWorkerRef.current.terminate();
-            timerWorkerRef.current = null;
-          }
-          if (audioCtxRef.current) audioCtxRef.current.close();
-        };
-
-        recorder.start(1000); // chunk every second
+        recorder.start(1000);
         mediaRecorderRef.current = recorder;
-
-      } catch (err) {
-        console.error('Recording initialization failed:', err);
-        socket.emit('stop-recording', { roomId });
-        alert('Failed to start recording. Please check permissions.');
-      }
+      } catch (err) { console.error('Recording initialization failed:', err); socket.emit('stop-recording', { roomId }); }
     }
 
     function stopLocalRecording() {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
+      participantRecordersRef.current.forEach(r => { if (r.state !== 'inactive') r.stop(); });
+      participantRecordersRef.current.clear();
     }
 
-    return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      if (timerWorkerRef.current) {
-        timerWorkerRef.current.postMessage('stop');
-        timerWorkerRef.current.terminate();
-        timerWorkerRef.current = null;
-      }
-    };
-  }, [recordingState.isRecording, recordingState.initiatorId, localStream, remoteStreams, participants, socket, isJoined]);
+    return () => { if (timerWorkerRef.current) { timerWorkerRef.current.postMessage('stop'); timerWorkerRef.current.terminate(); } };
+  }, [recordingState.isRecording, recordingState.initiatorId, socket?.id]);
 
   // Meeting Timer logic
   useEffect(() => {
@@ -661,7 +525,11 @@ export default function Room() {
             <div className="meeting-duration" title="Meeting duration">
               <span>{meetingDuration}</span>
             </div>
-            <div className="participant-count">
+            <div 
+              className="participant-count" 
+              onClick={() => setShowPeople(!showPeople)}
+              title="View participants"
+            >
               <Users size={18} />
               <span>{participants.size + 1} participant{participants.size !== 0 ? 's' : ''}</span>
             </div>
@@ -704,6 +572,20 @@ export default function Room() {
               onPrivateReply={(id, name) => setPrivateChatTarget({ id, name })}
             />
           )}
+
+          {showPeople && (
+            <PeoplePanel
+              participants={participants}
+              localUserName={userName}
+              localUserId={socket?.id}
+              pinnedIds={pinnedIds}
+              onTogglePin={(id) => setPinnedIds(prev => 
+                prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]
+              )}
+              onRemoteMute={remoteMute}
+              onClose={() => setShowPeople(false)}
+            />
+          )}
         </div>
 
         <ControlBar
@@ -721,6 +603,8 @@ export default function Room() {
             setUnreadCount(0);
           }}
           onToggleSettings={() => setShowSettings(!showSettings)}
+          onToggleWhiteboard={() => setShowWhiteboard(!showWhiteboard)}
+          isWhiteboardOpen={showWhiteboard}
           onLeave={leaveRoom}
           audioDevices={audioDevices}
           videoDevices={videoDevices}
@@ -747,14 +631,24 @@ export default function Room() {
         {showRecordingModal && (
           <RecordingModal
             blob={recordedBlob}
+            participantBlobs={sessionParticipantBlobs}
             onClose={() => {
               setShowRecordingModal(false);
               setRecordedBlob(null);
+              setSessionParticipantBlobs(null);
             }}
           />
         )}
 
         <canvas ref={canvasRef} style={{ display: 'none' }} width={1280} height={720} />
+
+        {showWhiteboard && (
+          <Whiteboard 
+            roomId={roomId} 
+            userName={userName} 
+            onClose={() => setShowWhiteboard(false)} 
+          />
+        )}
       </div>
     </>
   );
@@ -797,126 +691,61 @@ function SettingsModal({ settings, onUpdate, onClose }) {
   );
 }
 
-function RecordingModal({ blob, onClose }) {
+function RecordingModal({ blob, participantBlobs, onClose }) {
   const [isConverting, setIsConverting] = useState(false);
-  const videoUrl = useMemo(() => {
-    return blob ? URL.createObjectURL(blob) : null;
-  }, [blob]);
+  const videoUrl = useMemo(() => blob ? URL.createObjectURL(blob) : null, [blob]);
 
-  // Handle video load to fix seeking for WebM
   const handleLoadedMetadata = (e) => {
-    const video = e.target;
-    if (video.duration === Infinity) {
-      video.currentTime = 1e101;
-      video.ontimeupdate = function() {
-        this.ontimeupdate = () => {};
-        this.currentTime = 0;
-      };
-    }
+    const v = e.target; if (v.duration === Infinity) { v.currentTime = 1e101; v.ontimeupdate = function() { this.ontimeupdate = () => {}; this.currentTime = 0; }; }
   };
 
-  useEffect(() => {
-    return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-    };
-  }, [videoUrl]);
+  useEffect(() => () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }, [videoUrl]);
 
-  const handleConvertToMp4 = async () => {
-    if (!blob || isConverting) return;
-    
+  const handleConvert = async (targetBlob, fileName) => {
+    if (!targetBlob || isConverting) return;
     setIsConverting(true);
     try {
       const formData = new FormData();
-      formData.append('video', blob, 'recording.webm');
-
-      const response = await fetch('/api/convert', {
-        method: 'POST',
-        body: formData,
-      });
-
+      formData.append('video', targetBlob, 'recording.webm');
+      const response = await fetch('/api/convert', { method: 'POST', body: formData });
       if (!response.ok) throw new Error('Conversion failed');
-
       const mp4Blob = await response.blob();
       const mp4Url = URL.createObjectURL(mp4Blob);
-      
-      const a = document.createElement('a');
-      a.href = mp4Url;
-      a.download = `meeting-recording-${Date.now()}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(mp4Url);
-    } catch (err) {
-      console.error('MP4 Conversion Error:', err);
-      alert('Failed to convert to MP4. Please try downloading the WebM version instead.');
-    } finally {
-      setIsConverting(false);
-    }
+      const a = document.createElement('a'); a.href = mp4Url; a.download = `${fileName}-${Date.now()}.mp4`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(mp4Url);
+    } catch (err) { console.error('Error:', err); alert('Conversion failed.'); } finally { setIsConverting(false); }
   };
 
   return (
     <div className="modal-overlay">
       <div className="modal-content recording-modal">
         <div className="modal-header">
-          <div className="modal-title">
-            <Circle size={20} fill="#ef4444" color="#ef4444" />
-            <h2>Recording Ready</h2>
-          </div>
-          <button className="modal-close" onClick={onClose} disabled={isConverting}>×</button>
+          <div className="modal-title"><h2>Recording Ready</h2></div>
+          <button className="modal-close" onClick={onClose}>×</button>
         </div>
-        
         <div className="recording-preview">
-          {videoUrl ? (
-            <video 
-              src={videoUrl} 
-              controls 
-              autoPlay 
-              onLoadedMetadata={handleLoadedMetadata}
-              className="preview-video" 
-            />
-          ) : (
-            <div className="preview-placeholder">Processing recording...</div>
-          )}
-          
-          {isConverting && (
-            <div className="conversion-overlay">
-              <div className="conversion-status">
-                <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
-                <p>Converting to MP4 for offline playback...</p>
-                <p className="status-note">This may take a moment depending on recording length.</p>
-              </div>
-            </div>
-          )}
+          {videoUrl && <video src={videoUrl} controls autoPlay onLoadedMetadata={handleLoadedMetadata} className="preview-video" />}
+          {isConverting && <div className="conversion-overlay">Converting...</div>}
         </div>
-
         <div className="recording-footer">
           <button className="btn btn-secondary" onClick={onClose} disabled={isConverting}>Close</button>
-          
-          <div className="footer-actions">
-            <button 
-              className="btn btn-primary btn-with-icon" 
-              onClick={handleConvertToMp4}
-              disabled={isConverting}
-              style={{ padding: '12px 24px' }}
-            >
-              {isConverting ? (
-                <>
-                  <Loader2 className="animate-spin" size={18} />
-                  <span>Converting...</span>
-                </>
-              ) : (
-                <>
-                  <Download size={20} />
-                  <span>Download Recording (MP4)</span>
-                </>
-              )}
-            </button>
-          </div>
+          <button className="btn btn-primary" onClick={() => handleConvert(blob, 'meeting-recording')}>Download Full MP4</button>
         </div>
+        {participantBlobs && participantBlobs.size > 0 && (
+          <div className="participant-section" style={{ marginTop: '20px', padding: '15px', background: 'rgba(255,255,255,0.05)', borderRadius: '10px' }}>
+            <h3 style={{ marginBottom: '10px', fontSize: '16px' }}>Specific Participants</h3>
+            <div style={{ display: 'grid', gap: '10px' }}>
+              {Array.from(participantBlobs.entries()).map(([id, data]) => (
+                <div key={id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{data.name}</span>
+                  <button className="btn btn-secondary btn-sm" onClick={() => handleConvert(data.blob, `participant-${data.name}`)}>Download MP4</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
-
-
 

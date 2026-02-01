@@ -7,6 +7,10 @@
     "start": "NODE_ENV=production node server.js"
   },
   "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.0",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@liveblocks/client": "^3.13.3",
+    "@liveblocks/react": "^3.13.3",
     "express": "^5.2.1",
     "lucide-react": "^0.563.0",
     "multer": "^2.0.2",

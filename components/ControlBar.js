@@ -11,7 +11,8 @@ import {
   Hand,
   ChevronUp, 
   ChevronDown,
-  Settings
+  Settings,
+  Pencil
 } from 'lucide-react';
 
 export default function ControlBar({
@@ -25,14 +26,16 @@ export default function ControlBar({
   onToggleScreenShare,
   onToggleHandRaise,
   onToggleChat,
-  onToggleSettings, // Added
+  onToggleSettings,
+  onToggleWhiteboard,
   onLeave,
   audioDevices,
   videoDevices,
   selectedAudioId,
   selectedVideoId,
   onChangeAudio,
-  onChangeVideo
+  onChangeVideo,
+  isWhiteboardOpen
 }) {
   const [showAudioMenu, setShowAudioMenu] = useState(false);
   const [showVideoMenu, setShowVideoMenu] = useState(false);
@@ -132,6 +135,14 @@ export default function ControlBar({
         {unreadCount > 0 && (
           <span className="notification-badge">{unreadCount}</span>
         )}
+      </button>
+
+      <button
+        className={`control-btn ${isWhiteboardOpen ? 'active' : ''}`}
+        onClick={onToggleWhiteboard}
+        title="Whiteboard"
+      >
+        <Pencil size={20} />
       </button>
 
       <button
