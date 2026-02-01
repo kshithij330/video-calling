@@ -24,6 +24,7 @@ export function useWebRTC({ socket, roomId, userName, onAutoPin }) {
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const signalingStateRef = useRef(new Map()); // remoteId -> { makingOffer, ignoreOffer }
+  const primaryStreamIdsRef = useRef(new Map()); // remoteId -> primaryStreamId
 
   // Initialize local media stream
   const initializeMedia = useCallback(async () => {
@@ -100,20 +101,28 @@ export function useWebRTC({ socket, roomId, userName, onAutoPin }) {
     pc.ontrack = (event) => {
       const stream = event.streams[0];
       const participantId = remoteId;
+      if (!stream) return;
 
-      // Heuristic: If we already have a stream and this is a new video track, it's screen share
-      // In a real app, we'd use transceiver labels or SDP mid, but this works for simple dual-stream
-      const videoTracks = pc.getReceivers().filter(r => r.track.kind === 'video');
-      const isSecondVideo = videoTracks.length > 1;
+      // Robust identification: The first stream received is the primary (camera/mic)
+      // Any different stream received later is a screen share
+      let isPrimary = false;
+      const primaryId = primaryStreamIdsRef.current.get(participantId);
+      
+      if (!primaryId) {
+        primaryStreamIdsRef.current.set(participantId, stream.id);
+        isPrimary = true;
+      } else if (primaryId === stream.id) {
+        isPrimary = true;
+      }
 
-      if (isSecondVideo && event.track.kind === 'video') {
-        setRemoteScreenStreams((prev) => {
+      if (isPrimary) {
+        setRemoteStreams((prev) => {
           const newMap = new Map(prev);
           newMap.set(participantId, stream);
           return newMap;
         });
       } else {
-        setRemoteStreams((prev) => {
+        setRemoteScreenStreams((prev) => {
           const newMap = new Map(prev);
           newMap.set(participantId, stream);
           return newMap;
@@ -225,25 +234,34 @@ export function useWebRTC({ socket, roomId, userName, onAutoPin }) {
   const startScreenShare = useCallback(async () => {
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false
+        video: {
+          cursor: "always"
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
       });
       
       screenStreamRef.current = screenStream;
       setLocalScreenStream(screenStream);
       setIsScreenSharing(true);
       
-      const screenTrack = screenStream.getVideoTracks()[0];
-
-      // Add track to all active peer connections - will trigger onnegotiationneeded
-      peerConnectionsRef.current.forEach((pc) => {
-        pc.addTrack(screenTrack, screenStream);
+      // Add all tracks (video and audio) to all active peer connections
+      screenStream.getTracks().forEach((track) => {
+        peerConnectionsRef.current.forEach((pc) => {
+          pc.addTrack(track, screenStream);
+        });
+        
+        // Handle user stopping share via browser UI
+        if (track.kind === 'video') {
+          track.onended = () => stopScreenShare();
+        }
       });
 
       socket?.emit('toggle-screen-share', { roomId, isScreenSharing: true });
       if (onAutoPin) onAutoPin('local-screen');
-
-      screenTrack.onended = () => stopScreenShare();
     } catch (error) {
       console.error('Error starting screen share:', error);
     }
@@ -367,6 +385,17 @@ export function useWebRTC({ socket, roomId, userName, onAutoPin }) {
         if (p) newMap.set(id, { ...p, isScreenSharing });
         return newMap;
       });
+
+      if (!isScreenSharing) {
+        setRemoteScreenStreams((prev) => {
+          const newMap = new Map(prev);
+          if (newMap.has(id)) {
+            newMap.delete(id);
+            return newMap;
+          }
+          return prev;
+        });
+      }
     };
 
     const handleToggleHandRaise = ({ id, isHandRaised }) => {

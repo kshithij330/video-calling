@@ -25,6 +25,7 @@ export default function ControlBar({
   onToggleScreenShare,
   onToggleHandRaise,
   onToggleChat,
+  onToggleSettings, // Added
   onLeave,
   audioDevices,
   videoDevices,
@@ -131,6 +132,14 @@ export default function ControlBar({
         {unreadCount > 0 && (
           <span className="notification-badge">{unreadCount}</span>
         )}
+      </button>
+
+      <button
+        className="control-btn"
+        onClick={onToggleSettings}
+        title="Settings"
+      >
+        <Settings size={20} />
       </button>
 
       <button

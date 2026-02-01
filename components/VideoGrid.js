@@ -1,12 +1,15 @@
-import { useRef, useEffect, useMemo } from 'react'; // Re-trigger build
-
+import { useRef, useEffect, useMemo, useState } from 'react';
 import { 
   Pin, 
   PinOff, 
   MicOff, 
+  Mic,
   VideoOff, 
   Hand,
-  MessageCircle
+  MessageSquare,
+  Volume2,
+  Volume1,
+  VolumeX
 } from 'lucide-react';
 
 export default function VideoGrid({
@@ -19,11 +22,11 @@ export default function VideoGrid({
   localHandRaised,
   pinnedIds = [], // Now an array for multi-pin
   onTogglePin,
-  onPrivateMessage,
   isMuted,
   isCameraOff,
   onRemoteMute,
-  onRemoteCameraOff
+  onRemoteCameraOff,
+  onStartPrivateChat
 }) {
   // Calculate all tiles
   const tiles = useMemo(() => {
@@ -75,8 +78,8 @@ export default function VideoGrid({
     return result;
   }, [localStream, localScreenStream, remoteStreams, remoteScreenStreams, participants]);
 
-  const hasPins = pinnedIds.length > 0;
   const pinnedTiles = tiles.filter(t => pinnedIds.includes(t.id));
+  const hasPins = pinnedTiles.length > 0;
   const unpinnedTiles = tiles.filter(t => !pinnedIds.includes(t.id));
   const totalUnpinned = unpinnedTiles.length;
 
@@ -109,16 +112,18 @@ export default function VideoGrid({
       userName={tile.isScreen 
         ? `${tile.participant?.userName || (tile.isLocal ? localUserName || 'You' : 'Participant')}'s Screen` 
         : (tile.participant?.userName || (tile.isLocal ? localUserName || 'You' : 'Participant'))}
-      isMuted={tile.isScreen ? true : (tile.participant?.isMuted || (tile.isLocal ? isMuted : false))}
+      isMuted={tile.isScreen 
+        ? !tile.stream.getAudioTracks().some(t => t.enabled)
+        : (tile.participant?.isMuted || (tile.isLocal ? isMuted : false))}
       isCameraOff={tile.isScreen ? false : (tile.participant?.isCameraOff || (tile.isLocal ? isCameraOff : false))}
       isHandRaised={tile.isScreen ? false : (tile.participant?.isHandRaised || (tile.isLocal ? localHandRaised : false))}
       isLocal={tile.isLocal}
       isScreenSharing={tile.isScreen}
       isPinned={pinnedIds.includes(tile.id)}
       onPin={() => onTogglePin(tile.id)}
-      onPrivateMessage={!tile.isLocal ? () => onPrivateMessage(tile.participant ? tile.id : null, tile.participant?.userName) : undefined}
       onMute={!tile.isLocal && !tile.isScreen ? () => onRemoteMute(tile.id) : undefined}
       onCameraOff={!tile.isLocal && !tile.isScreen ? () => onRemoteCameraOff(tile.id) : undefined}
+      onStartPrivateChat={!tile.isLocal && !tile.isScreen ? () => onStartPrivateChat(tile.id, tile.participant?.userName) : undefined}
       inSidebar={inSidebar}
     />
   );
@@ -146,23 +151,57 @@ export default function VideoGrid({
   );
 }
 
-function VideoTile({ 
-  stream, 
-  userName, 
+function VideoTile({
+  stream,
+  userName,
   visitorId,
-  isMuted, 
-  isCameraOff, 
+  isMuted,
+  isCameraOff,
   isHandRaised,
-  isLocal, 
+  isLocal,
   isScreenSharing,
   isPinned,
   onPin,
-  onPrivateMessage,
   onMute,
   onCameraOff,
+  onStartPrivateChat,
   inSidebar
 }) {
   const videoRef = useRef(null);
+  const [aspectRatio, setAspectRatio] = useState(16/9);
+
+  const handleLoadedMetadata = (e) => {
+    const video = e.target;
+    if (video.videoWidth && video.videoHeight) {
+      setAspectRatio(video.videoWidth / video.videoHeight);
+    }
+  };
+
+  const [volume, setVolume] = useState(1);
+  const [showVolume, setShowVolume] = useState(false);
+  const volumeRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = volume;
+    }
+  }, [volume]);
+
+  // Handle click outside to close volume slider
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (volumeRef.current && !volumeRef.current.contains(event.target)) {
+        setShowVolume(false);
+      }
+    };
+
+    if (showVolume) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showVolume]);
 
   useEffect(() => {
     const videoElement = videoRef.current;
@@ -192,7 +231,10 @@ function VideoTile({
   };
 
   return (
-    <div className={`video-tile ${isCameraOff && !isScreenSharing ? 'camera-off' : ''} ${isScreenSharing ? 'screen-sharing' : ''} ${isPinned ? 'is-pinned' : ''} ${inSidebar ? 'in-sidebar' : ''}`}>
+    <div 
+      className={`video-tile ${isCameraOff && !isScreenSharing ? 'camera-off' : ''} ${isScreenSharing ? 'screen-sharing' : ''} ${isPinned ? 'is-pinned' : ''} ${inSidebar ? 'in-sidebar' : ''}`}
+      style={{ aspectRatio }}
+    >
       {isCameraOff && !isScreenSharing ? (
         <div className="video-avatar">
           {getInitials(userName)}
@@ -200,9 +242,11 @@ function VideoTile({
       ) : (
         <video
           ref={videoRef}
+          id={`video-${visitorId}`}
           autoPlay
           playsInline
           muted={isLocal}
+          onLoadedMetadata={handleLoadedMetadata}
           style={{ transform: isLocal && !isScreenSharing ? 'scaleX(-1)' : 'none' }}
         />
       )}
@@ -216,38 +260,89 @@ function VideoTile({
           )}
         </div>
         <div className="video-tile-status">
-          <button 
+          <div 
+            role="button"
+            tabIndex={0}
             className={`status-icon action-btn ${isPinned ? 'active' : ''}`}
             onClick={(e) => { e.stopPropagation(); onPin(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onPin(); } }}
             title={isPinned ? "Unpin" : "Pin"}
           >
-            {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
-          </button>
-          
-          {onPrivateMessage && (
-            <button
+            {isPinned ? <PinOff size={20} /> : <Pin size={20} />}
+          </div>
+
+          {!isLocal && (
+            <div 
+              ref={volumeRef}
+              className="volume-control-container"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div 
+                role="button"
+                tabIndex={0}
+                className={`status-icon action-btn ${showVolume ? 'active' : ''}`}
+                onClick={() => setShowVolume(!showVolume)}
+              >
+                {volume === 0 ? <VolumeX size={20} /> : volume < 0.5 ? <Volume1 size={20} /> : <Volume2 size={20} />}
+              </div>
+              
+              {showVolume && (
+                <div className="volume-slider-popup">
+                  <div className="volume-slider-track">
+                    <div 
+                      className="volume-slider-fill" 
+                      style={{ height: `${volume * 100}%` }}
+                    />
+                    <div 
+                      className="volume-slider-thumb"
+                      style={{ bottom: `${volume * 100}%` }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={volume}
+                    onChange={(e) => setVolume(parseFloat(e.target.value))}
+                    className="vertical-slider"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {!isLocal && onStartPrivateChat && (
+            <div 
+              role="button"
+              tabIndex={0}
               className="status-icon action-btn"
-              onClick={(e) => { e.stopPropagation(); onPrivateMessage(); }}
+              onClick={(e) => { e.stopPropagation(); onStartPrivateChat(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onStartPrivateChat(); } }}
               title="Message privately"
             >
-              <MessageCircle size={14} />
-            </button>
+              <MessageSquare size={20} />
+            </div>
           )}
           
           {isHandRaised && (
             <span className="status-icon hand-raised" title="Hand raised">
-              <Hand size={14} fill="currentColor" />
+              <Hand size={20} fill="currentColor" />
             </span>
           )}
 
-          {isMuted && (
+          {isMuted ? (
             <span className="status-icon muted" title="Muted">
-              <MicOff size={14} />
+              <MicOff size={18} />
+            </span>
+          ) : (
+            <span className="status-icon unmuted" title="Unmuted">
+              <Mic size={18} />
             </span>
           )}
           {isCameraOff && !isScreenSharing && (
             <span className="status-icon" title="Camera off">
-              <VideoOff size={14} />
+              <VideoOff size={20} />
             </span>
           )}
         </div>

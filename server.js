@@ -2,6 +2,11 @@ const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const next = require('next');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const { spawn } = require('child_process');
+const os = require('os');
 
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev });
@@ -22,6 +27,59 @@ app.prepare().then(() => {
     }
   });
 
+  // Setup Multer for video uploads
+  const upload = multer({ 
+    dest: os.tmpdir(),
+    limits: { fileSize: 500 * 1024 * 1024 } // 500MB limit
+  });
+
+  // Conversion API
+  server.post('/api/convert', upload.single('video'), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No video file provided' });
+    }
+
+    const inputPath = req.file.path;
+    const outputPath = path.join(os.tmpdir(), `${req.file.filename}.mp4`);
+
+    console.log(`Starting conversion: ${inputPath} -> ${outputPath}`);
+
+    // ffmpeg -i input.webm -c:v libx264 -preset ultrafast -crf 22 -c:a aac -b:a 128k -movflags +faststart -y outputPath
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', inputPath,
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-crf', '22',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-movflags', '+faststart',
+      '-y', 
+      outputPath
+    ]);
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0) {
+        console.log('Conversion successful');
+        res.download(outputPath, 'recording.mp4', (err) => {
+          // Cleanup files after download
+          fs.unlink(inputPath, () => {});
+          fs.unlink(outputPath, () => {});
+          if (err) console.error('Download error:', err);
+        });
+      } else {
+        console.error(`FFmpeg process exited with code ${code}`);
+        res.status(500).json({ error: 'Conversion failed' });
+        fs.unlink(inputPath, () => {});
+      }
+    });
+
+    ffmpeg.on('error', (err) => {
+      console.error('FFmpeg error:', err);
+      res.status(500).json({ error: 'FFmpeg process error' });
+      fs.unlink(inputPath, () => {});
+    });
+  });
+
   // Socket.IO connection handling
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
@@ -34,11 +92,26 @@ app.prepare().then(() => {
       if (!rooms.has(roomId)) {
         rooms.set(roomId, {
           participants: new Map(),
-          messages: []
+          messages: [],
+          settings: {
+            isContinuousChat: false
+          },
+          startTime: null,
+          recordingState: {
+            isRecording: false,
+            startTime: null,
+            initiatorId: null
+          }
         });
       }
 
       const room = rooms.get(roomId);
+      
+      // Start timer if first participant
+      if (room.participants.size === 0) {
+        room.startTime = Date.now();
+      }
+
       room.participants.set(socket.id, {
         id: socket.id,
         userName: userName || `User ${socket.id.slice(0, 4)}`,
@@ -62,8 +135,14 @@ app.prepare().then(() => {
       });
       socket.emit('existing-participants', existingParticipants);
 
-      // Send chat history
-      socket.emit('chat-history', room.messages);
+      // Send chat history (only public messages for simplicity/security)
+      const publicHistory = room.messages.filter(msg => !msg.toId);
+      socket.emit('chat-history', publicHistory);
+
+      // Send room settings, start time, and recording state
+      socket.emit('room-settings-updated', room.settings);
+      socket.emit('room-start-time', room.startTime);
+      socket.emit('recording-state-updated', room.recordingState);
 
       console.log(`${socket.id} joined room ${roomId}`);
     });
@@ -166,8 +245,33 @@ app.prepare().then(() => {
       }
     });
 
+    // Recording State
+    socket.on('start-recording', ({ roomId }) => {
+      const room = rooms.get(roomId);
+      if (room && !room.recordingState.isRecording) {
+        room.recordingState = {
+          isRecording: true,
+          startTime: Date.now(),
+          initiatorId: socket.id
+        };
+        io.to(roomId).emit('recording-state-updated', room.recordingState);
+      }
+    });
+
+    socket.on('stop-recording', ({ roomId }) => {
+      const room = rooms.get(roomId);
+      if (room && room.recordingState.isRecording) {
+        room.recordingState = {
+          isRecording: false,
+          startTime: null,
+          initiatorId: null
+        };
+        io.to(roomId).emit('recording-state-updated', room.recordingState);
+      }
+    });
+
     // Chat message
-    socket.on('chat-message', ({ roomId, message, to }) => {
+    socket.on('chat-message', ({ roomId, message, toId }) => {
       const room = rooms.get(roomId);
       if (room) {
         const participant = room.participants.get(socket.id);
@@ -176,18 +280,19 @@ app.prepare().then(() => {
           senderId: socket.id,
           senderName: participant?.userName || 'Unknown',
           message,
-          timestamp: new Date().toISOString(),
-          isPrivate: !!to,
-          to // Recipient ID if private
+          toId, // recipient ID if private
+          toName: toId ? room.participants.get(toId)?.userName : null,
+          timestamp: new Date().toISOString()
         };
-
-        if (to) {
-          // Private message: emit to sender and recipient only
-          socket.emit('new-message', chatMessage); // Sender
-          io.to(to).emit('new-message', chatMessage); // Recipient
+        
+        room.messages.push(chatMessage);
+        
+        if (toId) {
+          // Private message: emit only to sender and recipient
+          socket.emit('new-message', chatMessage);
+          io.to(toId).emit('new-message', chatMessage);
         } else {
-          // Public message: emit to everyone and store in history
-          room.messages.push(chatMessage);
+          // Public message: emit to everyone in room
           io.to(roomId).emit('new-message', chatMessage);
         }
       }
@@ -216,8 +321,18 @@ app.prepare().then(() => {
         socket.to(roomId).emit('user-left', { id: socket.id });
         socket.leave(roomId);
 
-        // Clean up empty rooms
-        if (room.participants.size === 0) {
+        // If recording initiator leaves, stop recording
+        if (room.recordingState.isRecording && room.recordingState.initiatorId === socket.id) {
+          room.recordingState = {
+            isRecording: false,
+            startTime: null,
+            initiatorId: null
+          };
+          io.to(roomId).emit('recording-state-updated', room.recordingState);
+        }
+
+        // Clean up empty rooms unless continuous chat is enabled
+        if (room.participants.size === 0 && !room.settings.isContinuousChat) {
           rooms.delete(roomId);
         }
       }

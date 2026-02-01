@@ -8,9 +8,9 @@ export default function ChatPanel({
   onSendMessage, 
   onClose, 
   currentUserId,
-  privateRecipient,
-  onClearPrivateRecipient,
-  onReplyPrivate
+  privateChatTarget,
+  onClearPrivateChat,
+  onPrivateReply
 }) {
   const [inputText, setInputText] = useState('');
   const [showGifs, setShowGifs] = useState(false);
@@ -25,7 +25,7 @@ export default function ChatPanel({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, privateRecipient]);
+  }, [messages]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -58,22 +58,15 @@ export default function ChatPanel({
   };
 
   const handleSendGif = (gifUrl) => {
-    onSendMessage({ 
-      type: 'gif', 
-      content: gifUrl,
-      to: privateRecipient?.id 
-    });
+    // We send the URL as a special message or just as text
+    onSendMessage({ type: 'gif', content: gifUrl }, privateChatTarget?.id);
     setShowGifs(false);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (inputText.trim()) {
-      onSendMessage({ 
-        type: 'text', 
-        content: inputText.trim(),
-        to: privateRecipient?.id 
-      });
+      onSendMessage({ type: 'text', content: inputText.trim() }, privateChatTarget?.id);
       setInputText('');
     }
   };
@@ -108,29 +101,31 @@ export default function ChatPanel({
           messages.map((msg, idx) => {
             const isOwn = msg.senderId === currentUserId;
             const messageData = typeof msg.message === 'object' ? msg.message : { type: 'text', content: msg.message };
-            const isPrivate = msg.isPrivate;
             
-            // Logic to handle replying when clicking a received private message
-            const handleMessageClick = () => {
-              if (isPrivate && !isOwn && onReplyPrivate) {
-                onReplyPrivate(msg.senderId, msg.senderName);
-              }
-            };
-
             return (
               <div 
                 key={msg.id || idx} 
-                className={`chat-message ${isOwn ? 'own' : ''} ${isPrivate ? 'private-msg' : ''}`}
-                onClick={handleMessageClick}
-                title={isPrivate && !isOwn ? "Click to reply privately" : ""}
-                style={{ cursor: isPrivate && !isOwn ? 'pointer' : 'default' }}
+                className={`chat-message ${isOwn ? 'own' : ''} ${msg.toId ? 'private' : ''}`}
+                onClick={() => {
+                  if (!isOwn) {
+                    onPrivateReply(msg.senderId, msg.senderName);
+                  } else if (msg.toId) {
+                    // If it's our own private message, we might want to reply to the target
+                    // Note: senderName in history might not be enough if we don't store target name
+                    // But for this request, we'll focus on clicking received messages
+                  }
+                }}
+                style={{ cursor: !isOwn ? 'pointer' : 'default' }}
+                title={!isOwn ? `Click to reply privately to ${msg.senderName}` : ''}
               >
                 <div className="chat-message-info">
                   <span className="chat-sender">
-                    {isOwn ? 'You' : msg.senderName}
-                    {isPrivate && (
-                      <span className="private-badge">
-                        (Privately {isOwn ? `to ${privateRecipient?.id === msg.to ? privateRecipient.name : 'Participant'}` : 'to You'})
+                    {isOwn ? 'You' : msg.senderName} 
+                    {msg.toId && (
+                      <span className="private-indicator">
+                        {isOwn 
+                          ? ` (Private message to ${msg.toName || 'Unknown'})` 
+                          : ' (Private message to you)'}
                       </span>
                     )}
                   </span>
@@ -186,20 +181,15 @@ export default function ChatPanel({
         </div>
       )}
 
-      {privateRecipient && (
-        <div className="private-chat-banner">
-          <span>Privately chatting with <strong>{privateRecipient.name}</strong></span>
-          <button 
-            className="clear-private-btn"
-            onClick={onClearPrivateRecipient}
-            title="Stop private chat"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-
       <div className="chat-input-container">
+        {privateChatTarget && (
+          <div className="private-chat-banner">
+            <span>Privately chatting with <strong>{privateChatTarget.name}</strong></span>
+            <button className="clear-private-btn" onClick={onClearPrivateChat}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
         <form className="chat-input-area" onSubmit={handleSubmit}>
           <button 
             type="button" 
@@ -213,7 +203,7 @@ export default function ChatPanel({
             <input
               type="text"
               className="chat-input"
-              placeholder={privateRecipient ? `Message ${privateRecipient.name}...` : "Send a message"}
+              placeholder="Send a message"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
             />

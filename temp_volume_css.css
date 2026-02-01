@@ -1,0 +1,72 @@
+
+/* Volume Control Slider */
+.volume-control-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.volume-slider-popup {
+  position: absolute;
+  bottom: 120%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 32px;
+  height: 120px;
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 0;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  animation: fadeIn var(--transition-fast) forwards;
+}
+
+.volume-slider-track {
+  width: 4px;
+  height: 80px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+}
+
+.volume-slider-fill {
+  width: 100%;
+  background: var(--accent-primary);
+  border-radius: 2px;
+  position: relative;
+}
+
+.volume-slider-thumb {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, 50%);
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  cursor: grab;
+}
+
+/* Native input range styling for vertical slider */
+input[type=range].vertical-slider {
+  position: absolute;
+  width: 80px; /* Length of the slider */
+  height: 32px; /* Touch target width */
+  transform: rotate(-90deg);
+  transform-origin: center;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 2;
+  top: 35%; /* Adjust based on container */
+}
